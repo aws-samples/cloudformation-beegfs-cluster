@@ -4,10 +4,6 @@ export privateip=$1
 
 export nodeid=$2
 
-#echo $privateip >> privateip 
-
-#echo $1 >> privateip1
-
 sudo apt-get update -y  
 
 sudo apt-get upgrade -y
@@ -34,16 +30,15 @@ sudo /opt/beegfs/sbin/beegfs-setup-mgmtd -p /beegfs-mgmt/beegfs/beegfs_mgmtd
   
 sudo apt-get -y install beegfs-meta beegfs-storage beegfs-meta beegfs-client beegfs-helperd beegfs-utils
 
+# Format and mount the first device as a metadata desk
+
 mkfs -t ext4 /dev/nvme0n1
 mkdir /desk0
 mount /dev/nvme0n1 /desk0
 
-# This script formats and mounts all available Instance Store devices
+# Format and mount all other available devices 
 
-##### Variables
 devices=( )
-
-##### Functions
 
 function add_device
 {
@@ -94,7 +89,6 @@ function print_devices
 }
 
 
-
 function do_mount
 {
     echo Mounting device $1 on $2 on $3
@@ -107,6 +101,7 @@ p
 
 w
 EOF
+
 # format!
 
 mkfs -t xfs -f $1
@@ -121,8 +116,7 @@ echo $si >> si
 
 echo "$1   $2      xfs     defaults          0 0" >> /etc/fstab
 echo $iv 
-#echo $3 >> function3
-#echo $4 >> nodeid2
+
 
 }
 
@@ -142,8 +136,6 @@ function mount_devices
     done
 }
 
-
-##### Main
 
 check_devices
 print_devices
