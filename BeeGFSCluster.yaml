@@ -1,0 +1,859 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: 'This CloudFormation template will deploy beeGFS parallel virtual file system. Internally it deploys 7 EC2 instances (One Management/Tier2 node, one Client node, Two Tier1 nodes and three Tier2 nodes) inside a private subnet, and a single bastion host inside a public subnet. Users can access the cluster client node by SSH to the bastion host'
+Parameters:
+    SSHKeyName:
+        Description: Amazon EC2 Key Pair for JumpHost instance
+        Type: "AWS::EC2::KeyPair::KeyName"
+    ManagementInstanceType:
+        Description: Management/T2 instance 
+        Type: String
+        Default: d3en.2xlarge
+        AllowedValues:
+            - d3en.2xlarge
+            - d3en.4xlarge
+            - d3en.8xlarge
+    T1InstanceType:
+        Description: T1 instance 
+        Type: String
+        Default: i3en.12xlarge
+        AllowedValues:
+            - i3en.12xlarge
+            - i3en.24xlarge
+    T2InstanceType:
+        Description: T2 instance 
+        Type: String
+        Default: d3en.2xlarge
+        AllowedValues:
+            - d3en.2xlarge
+            - d3en.4xlarge
+            - d3en.8xlarge
+    ClientInstanceType:
+        Description: Client instance 
+        Type: String
+        Default: m5n.2xlarge
+        AllowedValues:
+            - m5n.2xlarge
+            - m5n.4xlarge
+    BastionhostType:
+        Description: Bastion host
+        Type: String
+        Default: m5n.large
+        AllowedValues:
+            - m5n.large
+            - m5n.2xlarge
+            - m5n.4xlarge
+Resources:
+  ParallelFileSystemV1VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemV1VPC
+  
+  ParallelFileSystemV1IGW:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemV1IGW
+  
+  AttachGateway:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref ParallelFileSystemV1VPC
+      InternetGatewayId: !Ref ParallelFileSystemV1IGW
+  
+  ParallelFileSystemPublicSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref ParallelFileSystemV1VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: us-east-1a
+      MapPublicIpOnLaunch: 'true'
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemPublicSubnet
+  
+  ParallelFileSystemV1Subnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref ParallelFileSystemV1VPC
+      CidrBlock: 10.0.0.0/24
+      AvailabilityZone: us-east-1a
+      MapPublicIpOnLaunch: 'false'
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemV1Subnet
+  
+  ParallelFileSystemNAT:
+   Type: AWS::EC2::NatGateway
+   Properties:
+      AllocationId:
+         Fn::GetAtt:
+         - ParallelFileSystemEIP
+         - AllocationId
+      SubnetId:
+         Ref: ParallelFileSystemPublicSubnet
+      Tags:
+      - Key: Name
+        Value: ParallelFileSystemNAT
+  
+  ParallelFileSystemEIP:
+    DependsOn: AttachGateway
+    Type: AWS::EC2::EIP
+    Properties:
+        Domain: vpc
+  
+  ParallelFileSystemV1PublicRoutTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref ParallelFileSystemV1VPC
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemV1PublicRoute
+  
+  ParallelFileSystemV1PrivateRoutTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref ParallelFileSystemV1VPC
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemV1PrivateRoute
+  
+  ParallelFileSystemV1PublicRout:
+    Type: 'AWS::EC2::Route'
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref ParallelFileSystemV1PublicRoutTable
+      GatewayId: !Ref ParallelFileSystemV1IGW
+      DestinationCidrBlock: 0.0.0.0/0
+  
+  ParallelFileSystemV1NATRout:
+    Type: 'AWS::EC2::Route'
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref ParallelFileSystemV1PrivateRoutTable
+      NatGatewayId: !Ref ParallelFileSystemNAT
+      DestinationCidrBlock: 0.0.0.0/0
+  
+  ParallelFileSystemV1PublicSubnetRoutTableAssoc1:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref ParallelFileSystemV1PublicRoutTable
+      SubnetId: !Ref ParallelFileSystemPublicSubnet
+  
+  ParallelFileSystemV1PrivateSubnetRoutTableAssoc1:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref ParallelFileSystemV1PrivateRoutTable
+      SubnetId: !Ref ParallelFileSystemV1Subnet
+  
+  EC2SecurityGroupPublic: 
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Open App access
+      VpcId: !Ref ParallelFileSystemV1VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemV1EC2SGPublic
+  EC2SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Open App access
+      VpcId: !Ref ParallelFileSystemV1VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 10.0.1.0/24
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.0.0.0/24
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemV1EC2SG
+  InstanceLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      RetentionInDays: 7
+  managementNodeInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref FSRole
+  FSRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub 'ParallelFileSystemV1Role-BackupAndRestore-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+        - 'arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy'
+      Path: /
+  EC2InstanceManagementT2Node1:
+    Type: 'AWS::EC2::Instance'
+    DependsOn: ParallelFileSystemV1NATRout
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT30M
+    Metadata:
+      'AWS::CloudFormation::Init':
+        configSets:
+          default:
+            - configure
+        configure:
+          commands:
+            0-Add-the-BeeGFS-Repo: 
+              command: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - | 
+                    export nodeid=1
+                  - |
+                    export IMDS_TOKEN=$(curl -X PUT \"http://169.254.169.254/latest/api/token\" -H \"X-aws-ec2-metadata-token-ttl-seconds: 21600\")
+                  - |
+                    private_ip=$(curl -H \"X-aws-ec2-metadata-token: ${IMDS_TOKEN}\" -v http://169.254.169.254/latest/meta-data/local-ipv4)
+                  - | 
+                    sudo wget https://github.com/ameerhakme/testbeegfsfs/raw/main/script.sh 
+                  - | 
+                    sudo bash script.sh $private_ip $nodeid
+                  - | 
+                    echo $private_ip >> originp
+
+            1-Start-the-services: 
+              command: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - |
+                    sudo systemctl start beegfs-mgmtd
+                  - |
+                    sudo systemctl start beegfs-meta
+                  - |
+                    sudo systemctl start beegfs-storage
+    Properties:
+      InstanceType: !Sub '${ManagementInstanceType}'
+      ImageId: ami-07d02ee1eeb0c996c
+      KeyName: !Sub '${SSHKeyName}'
+      SubnetId: !Ref ParallelFileSystemV1Subnet
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      IamInstanceProfile: !Ref managementNodeInstanceProfile
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -xe
+            - |
+              sudo apt-get update -y
+            - |
+              sudo apt-get install -y python-pip
+            - |
+              sudo pip install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+            - cfn-init -v
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource EC2InstanceManagementT2Node1 '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - '         --configsets default'
+            - |+
+
+            - cfn-signal -e $?
+            - ' --stack '
+            - !Ref 'AWS::StackName'
+            - ' --resource EC2InstanceManagementT2Node1'
+            - ' --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemManagementT2Node1
+
+  EC2InstanceWorkerT1Node1:
+    Type: 'AWS::EC2::Instance'
+    DependsOn: EC2InstanceManagementT2Node1
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT30M 
+    Metadata:
+      'AWS::CloudFormation::Init':
+        configSets:
+          default:
+            - configure
+        configure:
+          commands: 
+            0-Add-the-BeeGFS-Repo: 
+              command: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - | 
+                    export nodeid=2
+                  - | 
+                  - export managementnodeip=
+                  - !GetAtt EC2InstanceManagementT2Node1.PrivateIp
+                  - |+
+                  
+                  - | 
+                    sudo wget https://github.com/ameerhakme/testbeegfsfs/raw/main/script.sh 
+                  - | 
+                    sudo bash script.sh $managementnodeip $nodeid
+                  - | 
+                    echo $managementnodeip >> originp 
+            6-Start-the-services: 
+              command: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - |
+                    sudo systemctl start beegfs-mgmtd
+                  - |
+                    sudo systemctl start beegfs-meta
+                  - |
+                    sudo systemctl start beegfs-storage
+    Properties:
+      InstanceType: !Sub '${T1InstanceType}'
+      ImageId: ami-07d02ee1eeb0c996c
+      KeyName: !Sub '${SSHKeyName}'
+      SubnetId: !Ref ParallelFileSystemV1Subnet
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      IamInstanceProfile: !Ref managementNodeInstanceProfile
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -xe
+            - |
+              sudo apt-get update -y
+            - |
+              sudo apt-get install -y python-pip
+            - |
+              sudo pip install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+            - cfn-init -v
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource EC2InstanceWorkerT1Node1 '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - '         --configsets default'
+            - |+
+
+            - cfn-signal -e $?
+            - ' --stack '
+            - !Ref 'AWS::StackName'
+            - ' --resource EC2InstanceWorkerT1Node1'
+            - ' --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemT1Node1
+  EC2InstanceWorkerT1Node2:
+    Type: 'AWS::EC2::Instance'
+    DependsOn: EC2InstanceManagementT2Node1
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT30M 
+    Metadata:
+      'AWS::CloudFormation::Init':
+        configSets:
+          default:
+            - configure
+        configure:
+          commands: 
+            0-Add-the-BeeGFS-Repo: 
+              command: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - | 
+                    export nodeid=3
+                  - | 
+                  - export managementnodeip=
+                  - !GetAtt EC2InstanceManagementT2Node1.PrivateIp
+                  - |+
+                  
+                  - | 
+                    sudo wget https://github.com/ameerhakme/testbeegfsfs/raw/main/script.sh 
+                  - | 
+                    sudo bash script.sh $managementnodeip $nodeid
+                  - | 
+                    echo $managementnodeip >> originp
+            6-Start-the-services: 
+              command: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - |
+                    sudo systemctl start beegfs-mgmtd
+                  - |
+                    sudo systemctl start beegfs-meta
+                  - |
+                    sudo systemctl start beegfs-storage
+    Properties:
+      InstanceType: !Sub '${T1InstanceType}'
+      ImageId: ami-07d02ee1eeb0c996c
+      KeyName: !Sub '${SSHKeyName}'
+      SubnetId: !Ref ParallelFileSystemV1Subnet
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      IamInstanceProfile: !Ref managementNodeInstanceProfile
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -xe
+            - |
+              sudo apt-get update -y
+            - |
+              sudo apt-get install -y python-pip
+            - |
+              sudo pip install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+            - cfn-init -v
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource EC2InstanceWorkerT1Node2 '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - '         --configsets default'
+            - |+
+
+            - cfn-signal -e $?
+            - ' --stack '
+            - !Ref 'AWS::StackName'
+            - ' --resource EC2InstanceWorkerT1Node2'
+            - ' --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemT1Node2
+  EC2InstanceWorkerT2Node2:
+    Type: 'AWS::EC2::Instance'
+    DependsOn: EC2InstanceManagementT2Node1
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT30M
+    Metadata:
+      'AWS::CloudFormation::Init':
+        configSets:
+          default:
+            - configure
+        configure:
+          commands: 
+            0-Add-the-BeeGFS-Repo: 
+              command: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - | 
+                    export nodeid=4
+                  - | 
+                  - export managementnodeip=
+                  - !GetAtt EC2InstanceManagementT2Node1.PrivateIp
+                  - |+
+                  
+                  - | 
+                    sudo wget https://github.com/ameerhakme/testbeegfsfs/raw/main/script.sh 
+                  - | 
+                    sudo bash script.sh $managementnodeip $nodeid
+                  - | 
+                    echo $managementnodeip >> originp
+            6-Start-the-services: 
+              command: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - |
+                    sudo systemctl start beegfs-mgmtd
+                  - |
+                    sudo systemctl start beegfs-meta
+                  - |
+                    sudo systemctl start beegfs-storage
+    Properties:
+      InstanceType: !Sub '${T2InstanceType}'
+      ImageId: ami-07d02ee1eeb0c996c
+      KeyName: !Sub '${SSHKeyName}'
+      SubnetId: !Ref ParallelFileSystemV1Subnet
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      IamInstanceProfile: !Ref managementNodeInstanceProfile
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -xe
+            - |
+              sudo apt-get update -y
+            - |
+              sudo apt-get install -y python-pip
+            - |
+              sudo pip install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+            - cfn-init -v
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource EC2InstanceWorkerT2Node2 '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - '         --configsets default'
+            - |+
+
+            - cfn-signal -e $?
+            - ' --stack '
+            - !Ref 'AWS::StackName'
+            - ' --resource EC2InstanceWorkerT2Node2'
+            - ' --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemWorkerT2Node2
+  EC2InstanceWorkerT2Node3:
+    Type: 'AWS::EC2::Instance'
+    DependsOn: EC2InstanceManagementT2Node1
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT30M
+    Metadata:
+      'AWS::CloudFormation::Init':
+        configSets:
+          default:
+            - configure
+        configure:
+          commands: 
+            0-Add-the-BeeGFS-Repo: 
+              command: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - | 
+                    export nodeid=5
+                  - | 
+                  - export managementnodeip=
+                  - !GetAtt EC2InstanceManagementT2Node1.PrivateIp
+                  - |+
+                  
+                  - | 
+                    sudo wget https://github.com/ameerhakme/testbeegfsfs/raw/main/script.sh 
+                  - | 
+                    sudo bash script.sh $managementnodeip $nodeid
+                  - | 
+                    echo $managementnodeip >> originp
+            6-Start-the-services: 
+              command: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - |
+                    sudo systemctl start beegfs-mgmtd
+                  - |
+                    sudo systemctl start beegfs-meta
+                  - |
+                    sudo systemctl start beegfs-storage
+    Properties:
+      InstanceType: !Sub '${T2InstanceType}'
+      ImageId: ami-07d02ee1eeb0c996c
+      KeyName: !Sub '${SSHKeyName}'
+      SubnetId: !Ref ParallelFileSystemV1Subnet
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      IamInstanceProfile: !Ref managementNodeInstanceProfile
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -xe
+            - |
+              sudo apt-get update -y
+            - |
+              sudo apt-get install -y python-pip
+            - |
+              sudo pip install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+            - cfn-init -v
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource EC2InstanceWorkerT2Node3 '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - '         --configsets default'
+            - |+
+
+            - cfn-signal -e $?
+            - ' --stack '
+            - !Ref 'AWS::StackName'
+            - ' --resource EC2InstanceWorkerT2Node3'
+            - ' --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemWorkerT2Node3 
+  EC2InstanceWorkerT2Node4:
+    Type: 'AWS::EC2::Instance'
+    DependsOn: EC2InstanceManagementT2Node1
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT30M
+    Metadata:
+      'AWS::CloudFormation::Init':
+        configSets:
+          default:
+            - configure
+        configure:
+          commands: 
+            0-Add-the-BeeGFS-Repo: 
+              command: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - | 
+                    export nodeid=6
+                  - | 
+                  - export managementnodeip=
+                  - !GetAtt EC2InstanceManagementT2Node1.PrivateIp
+                  - |+
+                  
+                  - | 
+                    sudo wget https://github.com/ameerhakme/testbeegfsfs/raw/main/script.sh 
+                  - | 
+                    sudo bash script.sh $managementnodeip $nodeid
+                  - | 
+                    echo $managementnodeip >> originp
+            6-Start-the-services: 
+              command: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - |
+                    sudo systemctl start beegfs-mgmtd
+                  - |
+                    sudo systemctl start beegfs-meta
+                  - |
+                    sudo systemctl start beegfs-storage
+    Properties:
+      InstanceType: !Sub '${T2InstanceType}'
+      ImageId: ami-07d02ee1eeb0c996c
+      KeyName: !Sub '${SSHKeyName}'
+      SubnetId: !Ref ParallelFileSystemV1Subnet
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      IamInstanceProfile: !Ref managementNodeInstanceProfile
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -xe
+            - |
+              sudo apt-get update -y
+            - |
+              sudo apt-get install -y python-pip
+            - |
+              sudo pip install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+            - cfn-init -v
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource EC2InstanceWorkerT2Node4 '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - '         --configsets default'
+            - |+
+
+            - cfn-signal -e $?
+            - ' --stack '
+            - !Ref 'AWS::StackName'
+            - ' --resource EC2InstanceWorkerT2Node4'
+            - ' --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemWorkerT2Node4
+  EC2InstanceClientNode:
+    Type: 'AWS::EC2::Instance'
+    DependsOn: [EC2InstanceManagementT2Node1, EC2InstanceWorkerT1Node1, EC2InstanceWorkerT1Node2, EC2InstanceWorkerT2Node2, EC2InstanceWorkerT2Node3, EC2InstanceWorkerT2Node4]
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT30M
+    Metadata:
+      'AWS::CloudFormation::Init':
+        configSets:
+          default:
+            - update
+            - configure
+        update:
+          commands:
+            update:
+              command: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - |
+                    sudo apt-get update -y  
+                  - |
+                    sudo apt-get upgrade -y
+                  
+        configure:
+          commands:
+            0-install-client:
+              command: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - | 
+                  - export managementnodeip=
+                  - !GetAtt EC2InstanceManagementT2Node1.PrivateIp
+                  - |+
+                
+                  - |
+                    sudo apt-get -y install gnupg
+                  - |
+                    sudo apt-get -y install linux-source
+                  - |
+                    sudo apt-get -y install linux-headers-4.19.0-14-all
+                  - |
+                    wget https://www.beegfs.io/release/beegfs_7.2.3/dists/beegfs-deb10.list
+                  - |
+                    sudo cp beegfs-deb10.list /etc/apt/sources.list.d/
+                  - |
+                    sudo wget -q https://www.beegfs.io/release/latest-stable/gpg/DEB-GPG-KEY-beegfs -O- | sudo apt-key add -
+                  - |
+                    sudo apt update -y 
+                  - |
+                    sudo apt-get upgrade -y
+                  - |
+                    sudo apt-get -y install beegfs-client beegfs-helperd beegfs-utils
+                  - |
+                    sudo /opt/beegfs/sbin/beegfs-setup-client -m $managementnodeip
+                  - |
+                    sudo systemctl start beegfs-helperd
+                  - |
+                    sudo systemctl start beegfs-client
+                  - |
+                    sudo beegfs-ctl --listnodes --nodetype=meta --nicdetails
+                  - |
+                    sudo beegfs-ctl --listnodes --nodetype=storage --nicdetails
+                  - |
+                    sudo beegfs-ctl --listnodes --nodetype=client --nicdetails
+                  - |
+                    sudo beegfs-net
+                  - |
+                    sudo beegfs-check-servers
+                  - |
+                    sudo beegfs-df
+                  - |
+                    sudo beegfs-ctl --addstoragepool --desc="tier1" --targets=201,202,203,301,302,303
+                  - |
+                    sudo beegfs-ctl --addstoragepool --desc="tier2" --targets=101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,401,402,403,404,405,406,407,408,409,410,411,412,413,414,415,501,502,503,504,505,506,507,508,509,510,511,512,513,514,515,601,602,603,604,605,606,607,608,609,610,611,612,613,614,615 
+                  - |
+                    sudo beegfs-ctl --liststoragepools
+                  - |
+                    sudo beegfs-ctl --setpattern --storagepoolid=2 /mnt/beegfs/tier1 
+                  - |
+                    sudo beegfs-ctl --setpattern --storagepoolid=3 /mnt/beegfs/tier2 
+                  - | 
+                    echo $managementnodeip >> managementnodeip
+    Properties:
+      InstanceType: !Sub '${ClientInstanceType}'
+      ImageId: ami-07d02ee1eeb0c996c
+      KeyName: !Sub '${SSHKeyName}'
+      SubnetId: !Ref ParallelFileSystemV1Subnet
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      IamInstanceProfile: !Ref managementNodeInstanceProfile
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -xe
+            - |
+              sudo apt-get update -y
+            - |
+              sudo apt-get install -y python-pip
+            - |
+              sudo pip install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+            - cfn-init -v
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource EC2InstanceClientNode '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - '         --configsets default'
+            - |+
+
+            - cfn-signal -e $?
+            - ' --stack '
+            - !Ref 'AWS::StackName'
+            - ' --resource EC2InstanceClientNode'
+            - ' --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemClientNode
+  EC2InstanceBastionhost:
+    Type: 'AWS::EC2::Instance'
+    DependsOn: AttachGateway
+    Properties:
+      InstanceType: !Sub '${BastionhostType}'
+      ImageId: ami-07d02ee1eeb0c996c
+      KeyName: !Sub '${SSHKeyName}'
+      SubnetId: !Ref ParallelFileSystemPublicSubnet
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroupPublic
+      IamInstanceProfile: !Ref managementNodeInstanceProfile
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -xe
+            - |
+              sudo apt-get update -y
+      Tags:
+        - Key: Name
+          Value: ParallelFileSystemBastionHost
