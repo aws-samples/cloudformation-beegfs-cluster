@@ -8,6 +8,7 @@ The CloudFormation template will deploy BeeGFS parallel virtual file system. Int
 
 ## Deploying BeeGFS Cluster 
 From the [AWS console](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/template) upload the [BeeGFSCluster.yaml](https://github.com/aws-samples/cloudformation-beegfs-cluster/raw/main/BeeGFSCluster.yaml) teamplate. Make sure you select the proper instance size  
+
 ![alt text](https://github.com/aws-samples/cloudformation-beegfs-cluster/blob/main/aws_console.png)
 
 
